@@ -27,6 +27,7 @@ import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.amazonaws.services.s3.model.S3Object;
 import com.amazonaws.services.s3.model.S3ObjectSummary;
 import org.elasticsearch.SpecialPermission;
+import org.elasticsearch.cloud.aws.AwsCipher;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.blobstore.BlobMetaData;
 import org.elasticsearch.common.blobstore.BlobPath;
@@ -52,10 +53,14 @@ public class S3BlobContainer extends AbstractBlobContainer {
 
     protected final String keyPath;
 
+    protected final AwsCipher cipher;
+
     public S3BlobContainer(BlobPath path, S3BlobStore blobStore) {
         super(path);
         this.blobStore = blobStore;
         this.keyPath = path.buildAsString();
+
+        this.cipher = new AwsCipher();
     }
 
     @Override
@@ -82,7 +87,7 @@ public class S3BlobContainer extends AbstractBlobContainer {
         while (retry <= blobStore.numberOfRetries()) {
             try {
                 S3Object s3Object = blobStore.client().getObject(blobStore.bucket(), buildKey(blobName));
-                return s3Object.getObjectContent();
+                return cipher.decrypt(s3Object.getObjectContent());
             } catch (AmazonClientException e) {
                 if (blobStore.shouldRetry(e) && (retry < blobStore.numberOfRetries())) {
                     retry++;
@@ -104,8 +109,8 @@ public class S3BlobContainer extends AbstractBlobContainer {
         if (blobExists(blobName)) {
             throw new FileAlreadyExistsException("blob [" + blobName + "] already exists, cannot overwrite");
         }
-        try (OutputStream stream = createOutput(blobName)) {
-            Streams.copy(inputStream, stream);
+        try (OutputStream outputStream = createOutput(blobName, cipher.getEncryptedBlobBufferSize(blobStore))) {
+            cipher.encrypt(inputStream, outputStream);
         }
     }
 
@@ -122,10 +127,10 @@ public class S3BlobContainer extends AbstractBlobContainer {
         }
     }
 
-    private OutputStream createOutput(final String blobName) throws IOException {
+    private OutputStream createOutput(final String blobName, int length) throws IOException {
         // UploadS3OutputStream does buffering & retry logic internally
         return new DefaultS3OutputStream(blobStore, blobStore.bucket(), buildKey(blobName),
-                blobStore.bufferSizeInBytes(), blobStore.numberOfRetries(), blobStore.serverSideEncryption());
+            length, blobStore.numberOfRetries(), blobStore.serverSideEncryption());
     }
 
     @Override
